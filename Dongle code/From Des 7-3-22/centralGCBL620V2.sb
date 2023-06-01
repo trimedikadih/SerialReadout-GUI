@@ -1,0 +1,516 @@
+//******************************************************************************
+// Compiler/Debug options
+//******************************************************************************
+
+//   =====================================================
+//   Conditional Compile Masks (they can be additive)
+//   -----------------------------------------------------
+//   0x00000001 : Print debug messages
+//   0x00000002 : Print Application Messages
+//   =====================================================
+//#set $cmpif, 0x00000002
+
+//******************************************************************************
+// Definitions
+//******************************************************************************
+#define ENABLE_DEBUG_PRINTS                  1
+// Minimum acceptable connection interval (0.5 seconds)
+#define MIN_CONN_INTERVAL                    20000
+// Maximum acceptable connection interval (1 second).
+#define MAX_CONN_INTERVAL                    100000
+// Connection supervisory timeout (4 seconds) - max 32 seconds
+#define CONN_SUP_TIMEOUT                     8000000
+
+#define DIS_Service                          0x180A
+#define DIS_SYSTEM_ID_UUID                   0x2A23
+#define DIS_MODEL_NUMBER_UUID                0x2A24
+#define DIS_SERIAL_NUMBER_UUID               0x2A25
+#define DIS_FIRMWARE_REVISION_UUID           0x2A26
+#define DIS_HARDWARE_REVISION_UUID           0x2A27
+#define DIS_SOFTWARE_REVISION_UUID           0x2A28
+#define DIS_MANUFACTURER_NAME_UUID           0x2A29
+#define DIS_IEEE_CERTIFICATION_UUID          0x2A2A
+#define DIS_PNP_ID_UUID                      0x2A50
+
+
+#define HTS_Service                         0x1809
+#define HTS_TMC                             0x2A1C
+#define HTS_TMCCCD                          0x2902
+
+#define VALUE_UNIT_FAHRENHEIT               0x01
+#define SENSOR_TIME_STAMP_PRESENT           0x02
+#define SENSOR_TEMPERATURE_TYPE_PRESENT     0x04
+
+#define MAX_BODYCORE_TEMP_C                 420
+#define MIN_BODYCORE_TEMP_C                 300
+#define MAX_BODYCORE_TEMP_F                 1076
+#define MIN_BODYCORE_TEMP_F                 860
+
+
+//******************************************************************************
+// Register Error Handler as early as possible
+//******************************************************************************
+sub HandlerOnErr()
+  if (ENABLE_DEBUG_PRINTS!=0) then
+    print "\n OnErr - ";GetLastError();"\n"
+  endif
+endsub
+onerror next HandlerOnErr
+
+//******************************************************************************
+// Global Variable Declarations
+//******************************************************************************
+DIM rc,conHndl, HTS_Hndl, DIS_Hndl, SRV_Hndl, sAttr, eAttr, DISchar
+DIM TMCHndl
+DIM TMCCCDHndl
+DIM manfName$, modelNum$, serialNum$, hwRev$, swRev$, fwRev$, sysId$, regDataList$, pnpId$
+//******************************************************************************
+// Initialise Global Variable
+//******************************************************************************
+manfName$=""
+modelNum$="" 
+serialNum$="" 
+hwRev$="" 
+swRev$="" 
+fwRev$=""
+sysId$="" 
+regDataList$=""
+pnpId$=""
+
+//******************************************************************************
+// Function and Subroutine definitions
+//******************************************************************************
+
+//------------------------------------------------------------------------------
+// For debugging
+// --- Format: ln=ABCD 
+//     AB : Subroutine/Function number
+//     CD : Result code number
+//------------------------------------------------------------------------------
+Sub AssertRC(rc,ln)
+    if rc!=0 then
+        print "\nFail :";integer.h' rc;" at tag ";ln
+    endif
+EndSub
+
+//------------------------------------------------------------------------------
+// Start scanning
+//------------------------------------------------------------------------------
+Function StartScanning()
+    rc = BleScanStart(0,0)
+    AssertRC(rc,46)
+//#cmpif 0x00000001 :    print "\n-- Scanning"
+EndFunc rc
+
+//==============================================================================
+// Initialise and instantiate service, characteristic, start adverts
+//==============================================================================
+FUNCTION OnStartup()
+//	uartclose()
+//	uartopen(115200)
+	uartflush(11)
+    rc=BleGattcOpen(0,0)
+    AssertRC(rc,55)
+    // rc=BleScanConfig(2,1)
+    rc = StartScanning()
+    AssertRC(rc,58)
+ENDFUNC rc
+
+
+//------------------------------------------------------------------------------
+// Called when an advert is received
+//------------------------------------------------------------------------------
+Function HndlrAdvRpt()
+    dim pAddr$, advDta$, nDisc, nRssi, adVal$, tag, found    //found is set to 1 when laird VSP UUID is found in advert data
+    dim uuid$ : uuid$ = "\03\02\09\18"                       // HTS UUID; DW - add Trimedika Ident to Thermometer Advert so we know is a Trimedia Device Advert    
+//#cmpif 0x00000001 :    print "\nEVBLE_ADV_REPORT"
+    do
+        rc=BleScanGetAdvReport(pAddr$, advDta$, nDisc, nRssi)  
+        if StrPos(advDta$,uuid$, 0)>0 then
+            rc=BleScanStop()
+            AssertRC(rc,89)
+            rc=BleConnect(pAddr$, 15000, MIN_CONN_INTERVAL, MAX_CONN_INTERVAL, CONN_SUP_TIMEOUT)
+//#cmpif 0x00000001 :            PRINT "\n\nPeer Address: "; StrHexize$(pAddr$)
+//#cmpif 0x00000001 :            PRINT "\nAdvert Data: ";StrHexize$(advDta$)
+//#cmpif 0x00000001 :            PRINT "\nNo. Discarded Adverts: ";nDisc
+//#cmpif 0x00000001 :            PRINT "\nRSSI: ";nRssi
+//#cmpif 0x00000001 :            print "\nConnecting..."
+            AssertRC(rc,92)
+            break
+        endif
+    until rc!=0
+EndFunc 1
+//==============================================================================
+// Ble event handler
+//==============================================================================
+FUNCTION HndlrBleMsg(BYVAL nMsgId, BYVAL nCtx)
+//#cmpif 0x00000001 :    PRINT "\nEVBLEMSG :"
+    DIM uu$ 
+    conHndl=nCtx
+    IF nMsgID==1 THEN
+//#cmpif 0x00000001 :        PRINT "\n\n- Disconnected"
+        EXITFUNC 0
+    ELSEIF nMsgID==0 THEN
+//#cmpif 0x00000001 :        PRINT "\n- Connected, so scan remote Gatt Table for DIS(0x180A) service"
+		DIS_Hndl = BleHandleUuid16(DIS_Service)
+		rc = BleDiscServiceFirst(conHndl,0,DIS_Hndl)
+		IF rc==0 THEN
+			//HandlerPrimSvc() will exit with 0 when operation is complete
+          WAITEVENT
+        endif
+
+
+
+
+//#cmpif 0x00000001 :        PRINT "\n- Connected, so scan remote Gatt Table for HTS(0x1809) service"
+		HTS_Hndl = BleHandleUuid16(HTS_Service)
+		rc = BleDiscServiceFirst(conHndl,0,HTS_Hndl)
+		IF rc==0 THEN
+			//HandlerPrimSvc() will exit with 0 when operation is complete
+          WAITEVENT
+        endif
+    ENDIF
+ENDFUNC 1
+
+
+
+
+FUNCTION HndlrBleMsg_0(BYVAL nMsgId, BYVAL nCtx)
+//#cmpif 0x00000001 :    PRINT "\nEVBLEMSG :"
+    DIM uu$ 
+    conHndl=nCtx
+    IF nMsgID==1 THEN
+//#cmpif 0x00000001 :        PRINT "\n\n- Disconnected"
+        EXITFUNC 0
+    ELSEIF nMsgID==0 THEN
+//#cmpif 0x00000001 :        PRINT "\n- Connected, so scan remote Gatt Table for HTS(0x1809) service"
+		HTS_Hndl = BleHandleUuid16(HTS_Service)
+		rc = BleDiscServiceFirst(conHndl,0,HTS_Hndl)
+		IF rc==0 THEN
+			//HandlerPrimSvc() will exit with 0 when operation is complete
+          WAITEVENT
+        endif
+    ENDIF
+ENDFUNC 1
+
+//==============================================================================
+// EVDISCPRIMSVC event handler
+//==============================================================================
+FUNCTION HandlerPrimSvc(cHndl,svcUuid,sHndl,eHndl) AS INTEGER
+//#cmpif 0x00000001 :    PRINT "\nEVDISCPRIMSVC :"
+//#cmpif 0x00000001 :    PRINT " cHndl=";cHndl
+//#cmpif 0x00000001 :    PRINT " svcUuid=";integer.h' svcUuid
+//#cmpif 0x00000001 :    PRINT " sHndl=";sHndl
+//#cmpif 0x00000001 :    PRINT " eHndl=";eHndl
+	IF sHndl == 0 THEN
+//#cmpif 0x00000001 :		PRINT "\nScan complete"
+	    EXITFUNC 0
+	ELSE
+        sAttr = sHndl
+        eAttr = eHndl
+//#cmpif 0x00000001 :        PRINT "\nScanning for characteristics in Hndl=";conHndl
+//#cmpif 0x00000001 :        PRINT " sHndl=";sHndl
+//#cmpif 0x00000001 :        PRINT " eHndl=";eHndl
+        SRV_Hndl = svcUuid
+        rc = BleDiscCharFirst(conHndl,0,sAttr,eAttr)
+        IF rc != 0 THEN
+//#cmpif 0x00000001 :			PRINT "\nScan characteristics failed"
+			EXITFUNC 0
+		ENDIF
+	ENDIF
+endfunc 1
+
+//==============================================================================
+// EVDISCCHAR event handler
+//==============================================================================
+function HandlerCharDisc(cHndl,cUuid,cProp,hVal,isUuid) as integer
+//#cmpif 0x00000001 :    print "\nEVDISCCHAR :"
+//#cmpif 0x00000001 :    print " cHndl=";cHndl
+//#cmpif 0x00000001 :    print " chUuid=";integer.h' cUuid
+//#cmpif 0x00000001 :    print " Props=";cProp
+//#cmpif 0x00000001 :    print " valHndl=";hVal
+//#cmpif 0x00000001 :    print " ISvcUuid=";isUuid
+
+	IF hVal == 0 THEN
+//#cmpif 0x00000001 :		PRINT "\nCharacteristic Scan complete"
+	    EXITFUNC 0
+	ELSE
+        if cUuid == BleHandleUuid16(HTS_TMC) then
+//#cmpif 0x00000001 :    		PRINT "\nFound characteristic service at handle ";hVal
+//#cmpif 0x00000001 :         PRINT "\nScan for ALL Descs in Characteristic UUID: ";integer.h' cUuid
+            TMCHndl = hVal
+		    rc = BleDiscDescFirst(conHndl,0,TMCHndl)
+            if rc==0 then
+                WAITEVENT
+            endif
+        else
+            DISchar = cUuid
+            rc=BleGattcRead(cHndl,hVal,0)            
+            if(rc == 0) then
+                waitevent
+            endif
+            DISchar = 0
+            rc = BleDiscCharNext(conHndl)
+        endif
+        if rc !=0 then
+            AssertRC(rc,205)
+            exitfunc 0
+        endif
+	ENDIF
+endfunc 1
+
+//==============================================================================
+// EVDISCDESC event handler
+//==============================================================================
+function HandlerDescDisc(cHndl,cUuid,hndl) as integer
+//#cmpif 0x00000001 :    print "\nEVDISCDESC"
+//#cmpif 0x00000001 :    print " cHndl=";cHndl
+//#cmpif 0x00000001 :    print " dscUuid=";integer.h' cUuid
+//#cmpif 0x00000001 :    print " dscHndl=";hndl
+	IF hndl == 0 THEN
+//#cmpif 0x00000001 :		PRINT "\nDescriptor Scan complete"
+	    EXITFUNC 0
+	ELSE
+        if cUuid == BleHandleUuid16(HTS_TMCCCD) then
+//#cmpif 0x00000001 :    		PRINT "\nFound CCCD at handle ";hndl
+            TMCCCDHndl = hndl
+            //Write 1 to CCCD to enable notifications
+//#cmpif 0x00000001 :            PRINT "\nEnable CCCD ";TMCCCDHndl
+//#cmpif 0x00000001 :            PRINT " cHndl "; cHndl
+            dim notf$ : notf$ = "\02\00"
+            rc=BleGattcWrite(cHndl, TMCCCDHndl, notf$)
+            if rc==0 then 
+                exitfunc 0
+            endif
+        else
+            rc = BleDiscDescNext(cHndl)
+        endif
+        if rc !=0 then
+            AssertRC(rc,225)
+            exitfunc 0
+        endif
+    endif
+endfunc 1
+
+//------------------------------------------------------------------------------
+// Called when BleGattcWrite() acknowledged at GATT layer
+//------------------------------------------------------------------------------
+Function HndlrAttrWrite(nCtx, hAttr, status)
+//#cmpif 0x00000001 :    print "\nEVATTRWRITE"
+//#cmpif 0x00000001 :    if status != 0 then
+//#cmpif 0x00000001 :       print "\n:: ATT Error 0x"; integer.h'status
+//#cmpif 0x00000001 :    else
+//#cmpif 0x00000001 :        print "\nEnabled Indications"
+//#cmpif 0x00000001 :    endif
+EndFunc 1
+
+//==============================================================================
+// Thrown when AT+CFG 213 = 0
+//==============================================================================
+function HndlrAttrNotify() as integer
+    dim chndl,aHndl,att$,dscd
+    dim test$
+    dim le
+    // DIM mantissa,exponent, flags
+    DIM flags, power , length, year, temperature
+
+//#cmpif 0x00000001 :    print "\nEVATTRNOTIFY Event \n"
+	uartflush(11)
+    rc=BleGattcNotifyRead(cHndl,aHndl,att$,dscd)
+//#cmpif 0x00000001 :    print "\n BleGattcNotifyRead()"
+    if rc==0 then
+//#cmpif 0x00000001 :        print " Connection Handle=";cHndl
+//#cmpif 0x00000001 :        print " Characteristic Handle=";aHndl
+        test$ = StrHexize$(att$)
+//#cmpif 0x00000001 :        print " Length=" ; strlen(test$) 
+//#cmpif 0x00000001 :        print " Data="; test$
+//#cmpif 0x00000001 :        print " Discarded=";dscd
+        // minimum data size if flags[1], temperature[4]
+        //   
+        length = strlen(test$)
+        if length >= 10 then
+            flags = strhex2bin(test$,0)
+            temperature = strhex2bin(test$,2) + ( strhex2bin(test$,4) * 256) + ( strhex2bin(test$,6) * 65536 )
+            length = length-10
+            power = strhex2bin(test$,8)
+            select power
+                case 255
+                    power=10
+                case 254
+                    power=100
+                case else
+                    power=0
+            endselect
+//#cmpif 0x00000001 :            print "\ntemperature"
+//#cmpif 0x00000002 :            
+print "\n"; manfName$ 
+//#cmpif 0x00000002 :            
+print "\n"; modelNum$
+//#cmpif 0x00000002 :            
+print "\n"; serialNum$
+//#cmpif 0x00000002 :            
+print "\n"; fwRev$
+//#cmpif 0x00000002 :            
+print "\nHealth Thermometer"
+//#cmpif 0x00000002 :            
+print "\nTemperature"
+//#cmpif 0x00000002 :            
+print "\nBody"
+            if power !=0 then
+//#cmpif 0x00000002 :            
+// print "\n"; temperature/power;".";temperature%power
+
+
+//              print "\nTEMP"; temperature;" POWER";power
+
+                if flags & VALUE_UNIT_FAHRENHEIT then
+                    if temperature < MIN_BODYCORE_TEMP_F then
+                        print "\nLO"
+                    elseif temperature > MAX_BODYCORE_TEMP_F then
+                        print "\nHI"
+                    else
+                        print "\n"; temperature/power;".";temperature%power
+                    endif
+                    print "\nF"
+//#cmpif 0x00000002 :                print "\n°F"
+//#cmpif 0x00000001 :                print "[FAHRENHEIT]"
+                else
+//#cmpif 0x00000002 :                
+                    if temperature < MIN_BODYCORE_TEMP_C then
+                        print "\nLO"
+                    elseif temperature > MAX_BODYCORE_TEMP_C then
+                        print "\nHI"
+                    else
+                        print "\n"; temperature/power;".";temperature%power
+                    endif
+                    print "\nC"
+//#cmpif 0x00000001 :          print "[CELCIUS]"
+                endif
+//#cmpif 0x00000002 :            
+//print "\n0" 
+            else
+//#cmpif 0x00000002 :            
+print "\n00.0"
+            endif
+//dummy value third from bottom Error Code
+   le = GetLastError()
+print "\n";le       // Last error code  in place of "\n0"
+//#cmpif 0x00000002 :            
+print "\n1"       // Index number of measurement - should always be 1
+//#cmpif 0x00000002 :            
+print "\n0\n"     // Time from last reading - should always be 0
+//#cmpif 0x00000001 :            
+//print "="; float.f temperature
+//print "="; temperature
+//#cmpif 0x00000001 :            
+//if (length >=14) &&  (flags & SENSOR_TIME_STAMP_PRESENT) then
+//#cmpif 0x00000001 :                
+//print " @ ";strhex2bin(test$,18);":";strhex2bin(test$,20);":";strhex2bin(test$,22)
+//#cmpif 0x00000001 :                
+//year = ((strhex2bin(test$,12) * 256) + strhex2bin(test$,10))
+//#cmpif 0x00000001 :                
+//print " ";strhex2bin(test$,16);"/";strhex2bin(test$,14) ;"/";year
+//#cmpif 0x00000001 :            endif
+        endif        
+    else
+//#cmpif 0x00000001 :        
+print " failed with ";integer.h' rc
+    endif
+endfunc 1
+
+//==============================================================================
+// Thrown when AT+CFG 213 = 1
+//==============================================================================
+
+function HndlrAttrNotifyEx(BYVAL hConn, BYVAL hChar, BYVAL nType, BYVAL nLen, BYVAL Data$) as integer
+//#cmpif 0x00000001 :    print "\nEVATTRNOTIFYEX Event :: "
+//#cmpif 0x00000001 :    if nType == 1 then
+//#cmpif 0x00000001 :        print "Notification\n"
+//#cmpif 0x00000001 :    elseif nType == 2 then
+//#cmpif 0x00000001 :        print "Indication\n"
+//#cmpif 0x00000001 :    endif
+//#cmpif 0x00000001 :    print " Connection Handle=";hConn
+//#cmpif 0x00000001 :    print " Characteristic Handle=";hChar
+//#cmpif 0x00000001 :    print " Data=";Data$
+endfunc 1
+
+//==============================================================================
+// EVATTRREAD event handler
+//==============================================================================
+function HandlerAttrRead(cHndl,aHndl,nSts) as integer
+    dim nOfst,nAhndl,at$
+//#cmpif 0x00000001 :    print "\nEVATTRREAD "
+//#cmpif 0x00000001 :    print " cHndl=";cHndl
+//#cmpif 0x00000001 :    print " attrHndl=";aHndl
+//#cmpif 0x00000001 :    print " status=";integer.h' nSts
+    if nSts == 0 then
+//#cmpif 0x00000001 :        print "\nAttribute read OK"
+        rc = BleGattcReadData(cHndl,nAhndl,nOfst,at$)
+//#cmpif 0x00000001 :        print "\nUUID = ";integer.h' DISchar 
+//#cmpif 0x00000001 :        print "\nData = ";StrHexize$(at$)
+//#cmpif 0x00000001 :        print "\nString= ";at$
+//#cmpif 0x00000001 :        print " Offset= ";nOfst
+//#cmpif 0x00000001 :        print " Len=";strlen(at$)
+//#cmpif 0x00000001 :        print "\nhandle = ";nAhndl
+        if(DISchar == BleHandleUuid16(DIS_MODEL_NUMBER_UUID)) then
+            modelNum$=at$
+        elseif(DISchar == BleHandleUuid16(DIS_SERIAL_NUMBER_UUID)) then
+            serialNum$=at$
+        elseif(DISchar == BleHandleUuid16(DIS_FIRMWARE_REVISION_UUID)) then
+            fwRev$=at$
+        elseif(DISchar == BleHandleUuid16(DIS_MANUFACTURER_NAME_UUID)) then
+            manfName$=at$
+        endif
+    else
+//#cmpif 0x00000001 :        print "\nFailed to read attribute"
+    endif
+endfunc 0
+
+//------------------------------------------------------------------------------
+// Disconnection
+//------------------------------------------------------------------------------
+Function HndlrDiscon(hConn, rsn)
+    manfName$=""
+    modelNum$="" 
+    serialNum$="" 
+    hwRev$="" 
+    swRev$="" 
+    fwRev$=""
+    sysId$="" 
+    regDataList$=""
+    pnpId$=""
+    rc=StartScanning()
+EndFunc 1
+
+
+//==============================================================================
+// Main() equivalent
+//==============================================================================
+ONEVENT  EVBLE_ADV_REPORT   CALL HndlrAdvRpt
+ONEVENT  EVBLEMSG           CALL HndlrBleMsg
+ONEVENT  EVDISCPRIMSVC      call HandlerPrimSvc
+OnEvent  EVDISCCHAR         call HandlerCharDisc
+OnEvent  EVDISCDESC         call HandlerDescDisc
+ONEVENT  EVATTRWRITE        CALL HndlrAttrWrite
+OnEvent  EVATTRNOTIFY       call HndlrAttrNotify    // Thrown when AT+CFG 213 = 0
+//OnEvent  EVATTRNOTIFYEX     call HndlrAttrNotifyEx  // Thrown when AT+CFG 213 = 1
+OnEvent  EVATTRREAD         call HandlerAttrRead
+ONEVENT  EvDiscon           CALL HndlrDiscon
+
+//ONEVENT EvAttrWrite        CALL HndlrAttrWrite
+//ONEVENT EvNotifyBuf        CALL HndlrNotifyBuf
+//ONEVENT EVATTRNOTIFY       CALL HndlrAttrNotify
+//ONEVENT EVBLE_SCAN_TIMEOUT CALL StartScanning
+//ONEVENT EVBLE_ADV_REPORT   CALL HndlrAdvRpt
+//ONEVENT EvBleMsg           CALL HndlrBleMsg
+//ONEVENT EvDiscon           CALL HndlrDiscon
+
+
+IF OnStartup()==0 THEN
+    PRINT "\nScanning, and Gatt Client is open\n"
+ELSE
+    PRINT "\nFailure OnStartup"
+ENDIF
+
+WAITEVENT
+PRINT "\nExiting..."
